@@ -1,5 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Store } from "../dist/store.js";
 
 // Each test gets a fresh in-memory store for full isolation.
@@ -237,5 +241,69 @@ describe("isolation", () => {
     assert.equal(b.projects.list().length, 0);
     a.close();
     b.close();
+  });
+});
+
+describe("migration: githubIssue column", () => {
+  // In-memory stores always CREATE tasks with githubIssue, so the ALTER-TABLE
+  // branch only fires for databases that predate v0.5.0. Simulate one on disk.
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mig-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Write a pre-v0.5.0 tasks table (no githubIssue column) to dbPath. */
+  function seedOldDb(dbPath) {
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE tasks (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        milestoneId INTEGER NOT NULL,
+        title       TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'todo',
+        createdAt   TEXT NOT NULL,
+        updatedAt   TEXT NOT NULL
+      );
+    `);
+    const cols = raw.prepare(`PRAGMA table_info(tasks)`).all().map((c) => c.name);
+    raw.close();
+    return cols;
+  }
+
+  it("adds the githubIssue column when opening a pre-existing tasks table", () => {
+    const dbPath = path.join(dir, "old.db");
+    const before = seedOldDb(dbPath);
+    assert.ok(!before.includes("githubIssue")); // gap exists before migration
+
+    const store = new Store(dbPath); // constructor runs migrate() → ALTER
+    try {
+      // Behavior check: a freshly created task exposes githubIssue defaulting to null,
+      // and the link can be set — both impossible if the column were missing.
+      const p = store.projects.create(null, { name: "P" });
+      const m = store.milestones.create(p.id, { name: "M" });
+      const t = store.tasks.create(m.id, { title: "T" });
+      assert.equal(t.githubIssue, null);
+      assert.equal(store.setTaskGithubIssue(t.id, "o/r#1").githubIssue, "o/r#1");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("is idempotent — opening an already-migrated db twice is fine", () => {
+    const dbPath = path.join(dir, "twice.db");
+    seedOldDb(dbPath);
+    new Store(dbPath).close(); // first open migrates
+    const store = new Store(dbPath); // second open: column already present, no-op
+    try {
+      const p = store.projects.create(null, { name: "P" });
+      const m = store.milestones.create(p.id, { name: "M" });
+      assert.equal(store.tasks.create(m.id, { title: "T" }).githubIssue, null);
+    } finally {
+      store.close();
+    }
   });
 });
