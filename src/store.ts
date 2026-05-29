@@ -41,6 +41,8 @@ export interface Task {
   title: string;
   description: string;
   status: TaskStatus;
+  /** Linked GitHub issue/PR, as "owner/repo#number", or null. */
+  githubIssue: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -330,6 +332,7 @@ export class Store {
         description TEXT NOT NULL DEFAULT '',
         status      TEXT NOT NULL DEFAULT 'todo'
                       CHECK (status IN ('todo','in_progress','done')),
+        githubIssue TEXT,
         createdAt   TEXT NOT NULL,
         updatedAt   TEXT NOT NULL
       );
@@ -372,6 +375,12 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_deps_dependsOnId     ON task_dependencies(dependsOnId);
       CREATE INDEX IF NOT EXISTS idx_activity_taskId      ON task_activity(taskId);
     `);
+
+    // Columns added after the initial release: add them to pre-existing tables.
+    const taskCols = this.db.prepare(`PRAGMA table_info(tasks)`).all() as { name: string }[];
+    if (!taskCols.some((c) => c.name === "githubIssue")) {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN githubIssue TEXT`);
+    }
   }
 
   /**
@@ -661,6 +670,27 @@ export class Store {
   logTask(taskId: string, message: string): TaskActivity {
     if (!this.tasks.get(taskId)) throw new Error(`No task found with id ${taskId}`);
     return this.recordActivity(taskId, "note", message, null, null);
+  }
+
+  /**
+   * Set or clear a task's linked GitHub issue (`ref` as "owner/repo#number",
+   * or null to unlink). Records an activity note. Returns the updated task.
+   */
+  setTaskGithubIssue(taskId: string, ref: string | null): Task | undefined {
+    const numeric = parseId("task", taskId);
+    if (numeric === undefined) return undefined;
+    if (!this.tasks.get(taskId)) return undefined;
+    this.db
+      .prepare(`UPDATE tasks SET githubIssue = ?, updatedAt = ? WHERE id = ?`)
+      .run(ref, nowIso(), numeric);
+    this.recordActivity(
+      taskId,
+      "note",
+      ref ? `Linked GitHub issue ${ref}` : "Unlinked GitHub issue",
+      null,
+      null,
+    );
+    return this.tasks.get(taskId);
   }
 
   /** The full activity log for a task, oldest first. */

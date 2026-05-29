@@ -97,6 +97,36 @@ per task) or hide it (`0`).
 The log lives in the `task_activity` table and is deleted with its task (and any
 ancestor) via cascade.
 
+## GitHub integration
+
+A task can be connected to a GitHub issue/PR, created from a task, and kept in
+status-sync — all through the **[`gh` CLI](https://cli.github.com)**, so there's
+no token to manage and no new runtime dependency. The tools that talk to GitHub
+require `gh` to be installed and authenticated (`gh auth login`).
+
+| Tool | Description | Needs `gh`? |
+| --- | --- | --- |
+| `link_github_issue` | Link a task to an existing issue/PR (`owner/repo#123` or a github.com URL). Records the reference only. | no |
+| `unlink_github_issue` | Remove a task's issue link. | no |
+| `create_github_issue` | Create an issue from a task (title + description), then link it back. Optional `repo` (`owner/repo`). | yes |
+| `sync_github_issue` | Reconcile a linked task's status with its issue. | yes |
+
+Status maps as **task `done` ↔ issue `closed`** (anything else ↔ `open`):
+
+- `sync_github_issue … push` (default) — the task drives the issue: `done`
+  closes it, otherwise it's (re)opened.
+- `sync_github_issue … pull` — the issue drives the task: a closed issue sets
+  the task `done`; a reopened issue moves a `done` task back to `in_progress`.
+  The status change is recorded in the task's [activity log](#task-activity--history).
+
+The linked issue shows up next to the task in `get_task` and the project tree:
+
+```
+      └─ task-7 [in_progress] Wire CLI  ↔ octocat/app#42
+```
+
+The link is stored in the `tasks.githubIssue` column.
+
 ## Persistence
 
 Tasks are persisted to a SQLite database (via `better-sqlite3`). By default the

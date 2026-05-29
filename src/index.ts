@@ -16,6 +16,15 @@ import {
   type TaskActivity,
 } from "./store.js";
 import { MemoryStore, MEMORY_KINDS, type Memory } from "./memory.js";
+import {
+  parseIssueRef,
+  formatIssueRef,
+  createIssue,
+  getIssueState,
+  setIssueState,
+  taskStatusToIssueState,
+  issueStateToTaskStatus,
+} from "./github.js";
 
 // Persist to TASK_DB_PATH if set, otherwise tasks.db in the current directory.
 // Use ":memory:" for an ephemeral, non-persistent store.
@@ -191,6 +200,7 @@ function formatTask(t: Task): string {
   return [
     `${t.id} [${t.status}] ${t.title}  (milestone: ${t.milestoneId})`,
     t.description ? `  ${t.description}` : null,
+    t.githubIssue ? `  ↔ ${t.githubIssue}` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -317,7 +327,8 @@ function renderTree(tree: ProjectTree): string {
       const unmet = t.dependsOn.filter((dep) => statusById.get(dep) !== "done");
       const tag =
         t.status !== "done" && unmet.length ? `  ⛔ blocked by ${unmet.join(", ")}` : "";
-      lines.push(`      └─ ${t.id} [${t.status}] ${t.title}${tag}`);
+      const link = t.githubIssue ? `  ↔ ${t.githubIssue}` : "";
+      lines.push(`      └─ ${t.id} [${t.status}] ${t.title}${link}${tag}`);
       for (const a of t.recentActivity) {
         lines.push(`          ${activityLine(a)}`);
       }
@@ -484,6 +495,113 @@ server.registerTool(
       return ok(`History for ${id} [${task.status}] ${task.title}:\n\n${log.map(formatActivity).join("\n")}`);
     } catch (e) {
       return err(`Could not read activity: ${(e as Error).message}`);
+    }
+  },
+);
+
+// --- GitHub integration (via the gh CLI) -------------------------------------
+
+server.registerTool(
+  "link_github_issue",
+  {
+    title: "Link GitHub issue",
+    description:
+      "Link a task to an existing GitHub issue or PR. Accepts the short form \"owner/repo#123\" or a full github.com URL. This only records the reference — it does not contact GitHub.",
+    inputSchema: {
+      taskId: z.string().describe("The task ID, e.g. task-1"),
+      issue: z.string().describe('Issue/PR ref: "owner/repo#123" or a github.com URL'),
+    },
+  },
+  async ({ taskId, issue }: { taskId: string; issue: string }) => {
+    const ref = parseIssueRef(issue);
+    if (!ref) return err(`Could not parse "${issue}". Use "owner/repo#123" or a github.com issue/PR URL.`);
+    const task = store.setTaskGithubIssue(taskId, formatIssueRef(ref));
+    return task ? ok(`Linked ${taskId} ↔ ${task.githubIssue}.`) : err(`No task found with id ${taskId}.`);
+  },
+);
+
+server.registerTool(
+  "unlink_github_issue",
+  {
+    title: "Unlink GitHub issue",
+    description: "Remove a task's link to a GitHub issue/PR.",
+    inputSchema: { taskId: z.string().describe("The task ID, e.g. task-1") },
+  },
+  async ({ taskId }: { taskId: string }) => {
+    const existing = store.tasks.get(taskId);
+    if (!existing) return err(`No task found with id ${taskId}.`);
+    if (!existing.githubIssue) return ok(`${taskId} has no linked issue.`);
+    store.setTaskGithubIssue(taskId, null);
+    return ok(`Unlinked ${taskId} from ${existing.githubIssue}.`);
+  },
+);
+
+server.registerTool(
+  "create_github_issue",
+  {
+    title: "Create GitHub issue from task",
+    description:
+      "Create a new GitHub issue from a task (title + description) via the gh CLI, then link the task to it. Requires gh to be installed and authenticated.",
+    inputSchema: {
+      taskId: z.string().describe("The task ID, e.g. task-1"),
+      repo: z
+        .string()
+        .optional()
+        .describe('Target repo "owner/repo" (defaults to the repo in the server\'s working directory)'),
+    },
+  },
+  async ({ taskId, repo }: { taskId: string; repo?: string }) => {
+    const task = store.tasks.get(taskId);
+    if (!task) return err(`No task found with id ${taskId}.`);
+    if (task.githubIssue) return err(`${taskId} is already linked to ${task.githubIssue}. Unlink first.`);
+    const body = `${task.description || "(no description)"}\n\n_Created from ${taskId} via mcp-task-mgmt._`;
+    try {
+      const ref = await createIssue({ repo, title: task.title, body });
+      store.setTaskGithubIssue(taskId, formatIssueRef(ref));
+      return ok(`Created and linked ${formatIssueRef(ref)} for ${taskId}.`);
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  },
+);
+
+server.registerTool(
+  "sync_github_issue",
+  {
+    title: "Sync task ↔ GitHub issue",
+    description:
+      "Reconcile a linked task's status with its GitHub issue. push: task drives the issue (done → closed, otherwise open). pull: issue drives the task (closed → done; reopened → in_progress). Requires gh.",
+    inputSchema: {
+      taskId: z.string().describe("The task ID, e.g. task-1"),
+      direction: z
+        .enum(["push", "pull"])
+        .optional()
+        .describe("push = task→issue (default), pull = issue→task"),
+    },
+  },
+  async ({ taskId, direction }: { taskId: string; direction?: "push" | "pull" }) => {
+    const task = store.tasks.get(taskId);
+    if (!task) return err(`No task found with id ${taskId}.`);
+    if (!task.githubIssue) return err(`${taskId} has no linked issue. Use link_github_issue or create_github_issue first.`);
+    const ref = parseIssueRef(task.githubIssue);
+    if (!ref) return err(`Stored link "${task.githubIssue}" is not a valid issue ref.`);
+    const dir = direction ?? "push";
+    try {
+      if (dir === "push") {
+        const desired = taskStatusToIssueState(task.status);
+        const current = await getIssueState(ref);
+        if (current === desired) return ok(`Already in sync: ${task.githubIssue} is ${current}.`);
+        await setIssueState(ref, desired);
+        return ok(`Pushed ${taskId} [${task.status}] → ${task.githubIssue} ${current} → ${desired}.`);
+      } else {
+        const state = await getIssueState(ref);
+        const desired = issueStateToTaskStatus(state, task.status);
+        if (desired === task.status) return ok(`Already in sync: ${taskId} is ${task.status} (issue ${state}).`);
+        store.tasks.update(taskId, { status: desired }); // auto-logs the transition
+        return ok(`Pulled ${task.githubIssue} (${state}) → ${taskId} ${task.status} → ${desired}.`);
+      }
+    } catch (e) {
+      return err((e as Error).message);
     }
   },
 );
