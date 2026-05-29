@@ -180,3 +180,32 @@ describe("projectTree dependsOn", () => {
     assert.deepEqual(t2.dependsOn, [tasks[0]]);
   });
 });
+
+// Corner cases surfaced by the generate-acceptance-criteria skill (spec-1).
+describe("corner cases", () => {
+  it("removeDependency returns false for a malformed or unknown task id", () => {
+    const { tasks } = seedTasks(1);
+    assert.equal(store.removeDependency("bogus", tasks[0]), false);
+    assert.equal(store.removeDependency(tasks[0], "also-bogus"), false);
+  });
+
+  it("dependencyIds and dependentIds return [] for a malformed id", () => {
+    assert.deepEqual(store.dependencyIds("bogus"), []);
+    assert.deepEqual(store.dependentIds("nope-1"), []);
+  });
+
+  it("nextActions returns [] for a project with no tasks", () => {
+    const project = store.projects.create(null, { name: "Empty" });
+    assert.deepEqual(store.nextActions(project.id), []);
+  });
+
+  it("criticalPath breaks equal-length ties by lowest prerequisite id", () => {
+    const { projectId, tasks } = seedTasks(3);
+    // task-3 depends on both task-2 and task-1 (equal-length prerequisites);
+    // adding 3→2 before 3→1 forces the dep < bestPrev tie-break branch.
+    store.addDependency(tasks[2], tasks[1]); // 3 → 2
+    store.addDependency(tasks[2], tasks[0]); // 3 → 1
+    const path = store.criticalPath(projectId).map((t) => t.id);
+    assert.deepEqual(path, [tasks[0], tasks[2]]); // lowest-id prerequisite wins
+  });
+});
