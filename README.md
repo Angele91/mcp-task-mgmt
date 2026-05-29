@@ -317,6 +317,7 @@ project is open in Claude Code they're auto-discovered (and invocable as
 | `work-session` | **Orchestrator** — ties the others into one loop: prime → plan → work/track → capture → consolidate. |
 | `project-init` | Onboard an existing/running codebase — capture what's already built as completed work so the tracker starts truthful. |
 | `task-breakdown` | Plan and scaffold a *new* goal into the Project → Milestone → Task → Spec hierarchy. |
+| `generate-acceptance-criteria` | Generate a spec's acceptance criteria rigorously — forces corner-case coverage **and** a check of the code the change touched for untested paths, then drives Nyquist coverage to zero gaps. |
 | `task-review` | Report status / what's next for a tracked project, and advance statuses. |
 | `memory-capture` | **Write** a durable lesson/fact/preference/decision to global memory. |
 | `memory-recall` | **Load** the compiled wiki + **recall** relevant notes before working. |
