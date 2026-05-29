@@ -205,7 +205,8 @@ project is open in Claude Code they're auto-discovered (and invocable as
 | Skill | What it does |
 | --- | --- |
 | `work-session` | **Orchestrator** — ties the others into one loop: prime → plan → work/track → capture → consolidate. |
-| `task-breakdown` | Plan and scaffold a goal into the Project → Milestone → Task → Spec hierarchy. |
+| `project-init` | Onboard an existing/running codebase — capture what's already built as completed work so the tracker starts truthful. |
+| `task-breakdown` | Plan and scaffold a *new* goal into the Project → Milestone → Task → Spec hierarchy. |
 | `task-review` | Report status / what's next for a tracked project, and advance statuses. |
 | `memory-capture` | **Write** a durable lesson/fact/preference/decision to global memory. |
 | `memory-recall` | **Load** the compiled wiki + **recall** relevant notes before working. |
