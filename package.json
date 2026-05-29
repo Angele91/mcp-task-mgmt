@@ -29,12 +29,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/angelgonzalez/mcp-task-mgmt.git"
+    "url": "git+https://github.com/Angele91/mcp-task-mgmt.git"
   },
   "bugs": {
-    "url": "https://github.com/angelgonzalez/mcp-task-mgmt/issues"
+    "url": "https://github.com/Angele91/mcp-task-mgmt/issues"
   },
-  "homepage": "https://github.com/angelgonzalez/mcp-task-mgmt#readme",
+  "homepage": "https://github.com/Angele91/mcp-task-mgmt#readme",
   "engines": {
     "node": ">=18"
   },
