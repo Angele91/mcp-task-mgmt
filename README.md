@@ -127,6 +127,42 @@ The linked issue shows up next to the task in `get_task` and the project tree:
 
 The link is stored in the `tasks.githubIssue` column.
 
+## Acceptance criteria & coverage
+
+Specs gain a fifth level — **acceptance criteria** (`spec ─< criterion`). Each
+criterion is one checkable statement carrying two independent signals:
+
+- **verified** — confirmed to pass.
+- **test** — an optional reference to the test that exercises it (`file::name`,
+  a CI job, etc.) — the Nyquist "sample".
+
+| Tool | Description |
+| --- | --- |
+| `add_acceptance_criterion` | Add a criterion to a spec (optionally with a test ref up front). |
+| `list_acceptance_criteria` | List a spec's criteria with their verified/test status. |
+| `update_acceptance_criterion` | Edit text, mark verified, set/clear the test ref (`test: ""` clears). |
+| `delete_acceptance_criterion` | Remove a criterion. |
+| `get_spec_coverage` | Per-spec detail + Nyquist summary. |
+| `get_coverage_report` | Project-wide audit — one line per spec, flagging gaps. |
+
+**Coverage** combines both signals. A criterion with no linked test is a
+**Nyquist gap** (no sample → the requirement isn't demonstrably exercised); a
+spec is **fully covered** only when every criterion is *both* verified *and*
+tested.
+
+```
+Coverage report for project-1:
+
+spec-3 Engine spec: 2/3 verified · 2/3 tested · 1 Nyquist gap(s)  ⚠ gaps
+spec-4 CLI spec:    1/1 verified · 1/1 tested · 0 Nyquist gap(s)  ✓ covered
+
+2 spec(s) · 2 with criteria · 1 fully covered · 1 Nyquist gap(s)
+Needs attention: spec-3
+```
+
+Criteria live in the `acceptance_criteria` table and cascade away with their
+spec (and any ancestor task/milestone/project).
+
 ## Persistence
 
 Tasks are persisted to a SQLite database (via `better-sqlite3`). By default the

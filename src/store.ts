@@ -57,6 +57,33 @@ export interface Spec {
   updatedAt: string;
 }
 
+/** A single acceptance criterion under a spec, with verification + test signals. */
+export interface AcceptanceCriterion {
+  id: string;
+  specId: string;
+  text: string;
+  /** Confirmed to pass. */
+  verified: boolean;
+  /** Optional reference to the test that exercises it (file::name, CI job, …). */
+  test: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Coverage stats for a spec's acceptance criteria. */
+export interface Coverage {
+  specId: string;
+  total: number;
+  verified: number;
+  /** Criteria with a linked test (the Nyquist "sample"). */
+  tested: number;
+  /** Criteria with no linked test. */
+  nyquistGaps: number;
+  unverified: number;
+  /** total > 0 and every criterion is both verified and tested. */
+  fullyCovered: boolean;
+}
+
 export type ActivityKind = "status" | "note";
 
 /** One append-only entry in a task's activity log (status change or note). */
@@ -373,7 +400,20 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_tasks_milestoneId    ON tasks(milestoneId);
       CREATE INDEX IF NOT EXISTS idx_specs_taskId         ON specs(taskId);
       CREATE INDEX IF NOT EXISTS idx_deps_dependsOnId     ON task_dependencies(dependsOnId);
+      -- Acceptance criteria under a spec (spec ─< criterion). Each carries a
+      -- verified flag and an optional test reference; deleting a spec cascades.
+      CREATE TABLE IF NOT EXISTS acceptance_criteria (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        specId      INTEGER NOT NULL REFERENCES specs(id) ON DELETE CASCADE,
+        text        TEXT NOT NULL,
+        verified    INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+        test        TEXT,
+        createdAt   TEXT NOT NULL,
+        updatedAt   TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_activity_taskId      ON task_activity(taskId);
+      CREATE INDEX IF NOT EXISTS idx_criteria_specId      ON acceptance_criteria(specId);
     `);
 
     // Columns added after the initial release: add them to pre-existing tables.
@@ -711,6 +751,137 @@ export class Store {
       .prepare(`SELECT * FROM task_activity WHERE taskId = ? ORDER BY id DESC LIMIT ?`)
       .all(tid, limit) as Record<string, unknown>[];
     return rows.map((r) => this.mapActivityRow(r));
+  }
+
+  // --- Acceptance criteria & coverage -----------------------------------------
+  //
+  // Criteria hang off specs (spec ─< criterion). Each has a `verified` flag and
+  // an optional `test` reference. Coverage combines both: "tested" means a test
+  // is linked (the Nyquist sample); "fully covered" means verified AND tested.
+
+  private mapCriterionRow(row: Record<string, unknown>): AcceptanceCriterion {
+    return {
+      id: formatId("ac", row.id as number),
+      specId: formatId("spec", row.specId as number),
+      text: row.text as string,
+      verified: Boolean(row.verified),
+      test: (row.test as string | null) ?? null,
+      createdAt: row.createdAt as string,
+      updatedAt: row.updatedAt as string,
+    };
+  }
+
+  /** Add an acceptance criterion to a spec. */
+  createCriterion(specId: string, text: string, test: string | null = null): AcceptanceCriterion {
+    const sid = parseId("spec", specId);
+    if (sid === undefined) throw new Error(`Invalid spec id: ${specId}`);
+    if (!this.specs.get(specId)) throw new Error(`No spec found with id ${specId}`);
+    const ts = nowIso();
+    const info = this.db
+      .prepare(
+        `INSERT INTO acceptance_criteria (specId, text, verified, test, createdAt, updatedAt)
+         VALUES (?, ?, 0, ?, ?, ?)`,
+      )
+      .run(sid, text, test, ts, ts);
+    return this.getCriterion(formatId("ac", info.lastInsertRowid))!;
+  }
+
+  getCriterion(id: string): AcceptanceCriterion | undefined {
+    const numeric = parseId("ac", id);
+    if (numeric === undefined) return undefined;
+    const row = this.db
+      .prepare(`SELECT * FROM acceptance_criteria WHERE id = ?`)
+      .get(numeric) as Record<string, unknown> | undefined;
+    return row ? this.mapCriterionRow(row) : undefined;
+  }
+
+  /** Criteria for a spec, oldest first. */
+  listCriteria(specId: string): AcceptanceCriterion[] {
+    const sid = parseId("spec", specId);
+    if (sid === undefined) throw new Error(`Invalid spec id: ${specId}`);
+    const rows = this.db
+      .prepare(`SELECT * FROM acceptance_criteria WHERE specId = ? ORDER BY id`)
+      .all(sid) as Record<string, unknown>[];
+    return rows.map((r) => this.mapCriterionRow(r));
+  }
+
+  /**
+   * Update a criterion. `test: ""` clears the link; `test: null` leaves it as-is
+   * (so callers can update only what they pass).
+   */
+  updateCriterion(
+    id: string,
+    values: { text?: string; verified?: boolean; test?: string | null },
+  ): AcceptanceCriterion | undefined {
+    const numeric = parseId("ac", id);
+    if (numeric === undefined) return undefined;
+    if (!this.getCriterion(id)) return undefined;
+
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { id: numeric };
+    if (values.text !== undefined) {
+      sets.push(`text = @text`);
+      params.text = values.text;
+    }
+    if (values.verified !== undefined) {
+      sets.push(`verified = @verified`);
+      params.verified = values.verified ? 1 : 0;
+    }
+    if (values.test !== undefined) {
+      sets.push(`test = @test`);
+      params.test = values.test === "" ? null : values.test;
+    }
+    sets.push(`updatedAt = @updatedAt`);
+    params.updatedAt = nowIso();
+
+    this.db
+      .prepare(`UPDATE acceptance_criteria SET ${sets.join(", ")} WHERE id = @id`)
+      .run(params);
+    return this.getCriterion(id);
+  }
+
+  deleteCriterion(id: string): boolean {
+    const numeric = parseId("ac", id);
+    if (numeric === undefined) return false;
+    const info = this.db.prepare(`DELETE FROM acceptance_criteria WHERE id = ?`).run(numeric);
+    return info.changes > 0;
+  }
+
+  /** Coverage stats for a single spec's criteria. */
+  coverageForSpec(specId: string): Coverage {
+    const criteria = this.listCriteria(specId);
+    const total = criteria.length;
+    const verified = criteria.filter((c) => c.verified).length;
+    const tested = criteria.filter((c) => c.test).length;
+    return {
+      specId,
+      total,
+      verified,
+      tested,
+      nyquistGaps: total - tested,
+      unverified: total - verified,
+      fullyCovered: total > 0 && verified === total && tested === total,
+    };
+  }
+
+  /** Prefixed spec IDs belonging to a project, in id order. */
+  private specIdsForProject(projectId: string): string[] {
+    const pid = parseId("project", projectId);
+    if (pid === undefined) throw new Error(`Invalid project id: ${projectId}`);
+    const rows = this.db
+      .prepare(
+        `SELECT s.id AS id FROM specs s
+           JOIN tasks t      ON s.taskId = t.id
+           JOIN milestones m ON t.milestoneId = m.id
+          WHERE m.projectId = ? ORDER BY s.id`,
+      )
+      .all(pid) as { id: number }[];
+    return rows.map((r) => formatId("spec", r.id));
+  }
+
+  /** Coverage for every spec in a project (Nyquist audit). */
+  coverageForProject(projectId: string): Coverage[] {
+    return this.specIdsForProject(projectId).map((id) => this.coverageForSpec(id));
   }
 
   close(): void {

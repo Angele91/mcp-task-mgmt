@@ -14,6 +14,8 @@ import {
   type Spec,
   type ProjectTree,
   type TaskActivity,
+  type AcceptanceCriterion,
+  type Coverage,
 } from "./store.js";
 import { MemoryStore, MEMORY_KINDS, type Memory } from "./memory.js";
 import {
@@ -603,6 +605,147 @@ server.registerTool(
     } catch (e) {
       return err((e as Error).message);
     }
+  },
+);
+
+// --- Acceptance criteria & coverage ------------------------------------------
+
+function formatCriterion(c: AcceptanceCriterion): string {
+  const v = c.verified ? "✓ verified" : "✗ unverified";
+  const t = c.test ? `test: ${c.test}` : "no test ⚠";
+  return `${c.id} [${v}] ${c.text}  (${t})  (spec: ${c.specId})`;
+}
+
+function coverageSummary(c: Coverage): string {
+  const flag = c.total === 0 ? "  (no criteria)" : c.fullyCovered ? "  ✓ covered" : "  ⚠ gaps";
+  return `${c.verified}/${c.total} verified · ${c.tested}/${c.total} tested · ${c.nyquistGaps} Nyquist gap(s)${flag}`;
+}
+
+server.registerTool(
+  "add_acceptance_criterion",
+  {
+    title: "Add acceptance criterion",
+    description:
+      "Add an acceptance criterion to a spec. Starts unverified; optionally attach a test reference up front.",
+    inputSchema: {
+      specId: z.string().describe("The spec ID, e.g. spec-1"),
+      text: z.string().min(1).describe("The criterion — a single checkable statement"),
+      test: z.string().optional().describe("Optional test reference (file::name, CI job, …)"),
+    },
+  },
+  async ({ specId, text, test }: { specId: string; text: string; test?: string }) => {
+    try {
+      const c = store.createCriterion(specId, text, test ?? null);
+      return ok(`Added:\n${formatCriterion(c)}`);
+    } catch (e) {
+      return err(`Could not add criterion: ${(e as Error).message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "list_acceptance_criteria",
+  {
+    title: "List acceptance criteria",
+    description: "List a spec's acceptance criteria with their verified/test status.",
+    inputSchema: { specId: z.string().describe("The spec ID, e.g. spec-1") },
+  },
+  async ({ specId }: { specId: string }) => {
+    try {
+      const criteria = store.listCriteria(specId);
+      if (criteria.length === 0) return ok(`No acceptance criteria on ${specId} yet.`);
+      return ok(criteria.map(formatCriterion).join("\n"));
+    } catch (e) {
+      return err(`Could not list criteria: ${(e as Error).message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "update_acceptance_criterion",
+  {
+    title: "Update acceptance criterion",
+    description:
+      "Update a criterion: edit its text, mark it verified/unverified, and/or set its test reference. Pass an empty string for `test` to clear the link.",
+    inputSchema: {
+      id: z.string().describe("The criterion ID, e.g. ac-1"),
+      text: z.string().min(1).optional().describe("New criterion text"),
+      verified: z.boolean().optional().describe("Mark verified (true) or not (false)"),
+      test: z.string().optional().describe('Test reference; "" clears it'),
+    },
+  },
+  async ({
+    id,
+    text,
+    verified,
+    test,
+  }: {
+    id: string;
+    text?: string;
+    verified?: boolean;
+    test?: string;
+  }) => {
+    const c = store.updateCriterion(id, { text, verified, test });
+    return c ? ok(`Updated:\n${formatCriterion(c)}`) : err(`No criterion found with id ${id}.`);
+  },
+);
+
+server.registerTool(
+  "delete_acceptance_criterion",
+  {
+    title: "Delete acceptance criterion",
+    description: "Delete an acceptance criterion by ID.",
+    inputSchema: { id: z.string().describe("The criterion ID, e.g. ac-1") },
+  },
+  async ({ id }: { id: string }) => {
+    return store.deleteCriterion(id) ? ok(`Deleted criterion ${id}.`) : err(`No criterion found with id ${id}.`);
+  },
+);
+
+server.registerTool(
+  "get_spec_coverage",
+  {
+    title: "Get spec coverage",
+    description:
+      "Acceptance-criteria coverage for one spec: per-criterion verified/test status plus a Nyquist summary (a criterion with no linked test is a gap).",
+    inputSchema: { specId: z.string().describe("The spec ID, e.g. spec-1") },
+  },
+  async ({ specId }: { specId: string }) => {
+    const spec = store.specs.get(specId);
+    if (!spec) return err(`No spec found with id ${specId}.`);
+    const cov = store.coverageForSpec(specId);
+    const criteria = store.listCriteria(specId);
+    const head = `Coverage for ${spec.id} [${spec.status}] ${spec.title}\n  ${coverageSummary(cov)}`;
+    if (criteria.length === 0) return ok(head);
+    return ok(`${head}\n\n${criteria.map(formatCriterion).join("\n")}`);
+  },
+);
+
+server.registerTool(
+  "get_coverage_report",
+  {
+    title: "Get coverage report (Nyquist audit)",
+    description:
+      "Project-wide acceptance-criteria coverage: one line per spec, flagging those with unverified or untested (Nyquist gap) criteria.",
+    inputSchema: { projectId: z.string().describe("The project ID, e.g. project-1") },
+  },
+  async ({ projectId }: { projectId: string }) => {
+    if (!store.projects.get(projectId)) return err(`No project found with id ${projectId}.`);
+    const covs = store.coverageForProject(projectId);
+    if (covs.length === 0) return ok("No specs in this project — nothing to cover.");
+    const lines = covs.map((c) => {
+      const spec = store.specs.get(c.specId);
+      return `${c.specId}${spec ? ` ${spec.title}` : ""}: ${coverageSummary(c)}`;
+    });
+    const specsWithCriteria = covs.filter((c) => c.total > 0);
+    const fully = specsWithCriteria.filter((c) => c.fullyCovered).length;
+    const withGaps = covs.filter((c) => c.total > 0 && !c.fullyCovered).map((c) => c.specId);
+    const totalGaps = covs.reduce((n, c) => n + c.nyquistGaps, 0);
+    const summary = [
+      `${covs.length} spec(s) · ${specsWithCriteria.length} with criteria · ${fully} fully covered · ${totalGaps} Nyquist gap(s)`,
+      withGaps.length ? `Needs attention: ${withGaps.join(", ")}` : "All specs with criteria are fully covered. ✓",
+    ].join("\n");
+    return ok(`Coverage report for ${projectId}:\n\n${lines.join("\n")}\n\n${summary}`);
   },
 );
 
