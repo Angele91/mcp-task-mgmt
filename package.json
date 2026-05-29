@@ -25,7 +25,16 @@
     "model-context-protocol",
     "tasks"
   ],
+  "author": "Angel Gonzalez <angele.gm91@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/angelgonzalez/mcp-task-mgmt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/angelgonzalez/mcp-task-mgmt/issues"
+  },
+  "homepage": "https://github.com/angelgonzalez/mcp-task-mgmt#readme",
   "engines": {
     "node": ">=18"
   },
