@@ -55,6 +55,22 @@ export interface Spec {
   updatedAt: string;
 }
 
+export type ActivityKind = "status" | "note";
+
+/** One append-only entry in a task's activity log (status change or note). */
+export interface TaskActivity {
+  id: string;
+  taskId: string;
+  kind: ActivityKind;
+  /** Free-text note (for `note`); blank or an auto-summary for `status`. */
+  message: string;
+  /** Prior status, for `status` entries (null on creation / for notes). */
+  fromStatus: string | null;
+  /** New status, for `status` entries (null for notes). */
+  toStatus: string | null;
+  createdAt: string;
+}
+
 /** A task enriched with its prerequisite edges, as it appears in a tree. */
 export interface TaskNode extends Task {
   specs: Spec[];
@@ -76,13 +92,18 @@ interface ParentRef {
   prefix: string;
 }
 
-interface EntityConfig {
+interface EntityConfig<T = unknown> {
   table: string;
   /** ID prefix for this entity (e.g. "milestone"). */
   prefix: string;
   /** Mutable, settable columns (excludes id / parent / timestamps). */
   fields: string[];
   parent?: ParentRef;
+  /** Optional side-effects fired after a successful create/update. */
+  hooks?: {
+    onCreate?(entity: T): void;
+    onUpdate?(before: T, after: T): void;
+  };
 }
 
 export function nowIso(): string {
@@ -105,7 +126,7 @@ export function parseId(prefix: string, id: string): number | undefined {
 export class EntityStore<T> {
   constructor(
     private readonly db: Database.Database,
-    private readonly cfg: EntityConfig,
+    private readonly cfg: EntityConfig<T>,
   ) {}
 
   private mapRow(row: Record<string, unknown>): T {
@@ -155,7 +176,9 @@ export class EntityStore<T> {
       .prepare(`INSERT INTO ${this.cfg.table} (${cols.join(", ")}) VALUES (${placeholders})`)
       .run(params);
 
-    return this.get(formatId(this.cfg.prefix, info.lastInsertRowid))!;
+    const entity = this.get(formatId(this.cfg.prefix, info.lastInsertRowid))!;
+    this.cfg.hooks?.onCreate?.(entity);
+    return entity;
   }
 
   get(id: string): T | undefined {
@@ -194,7 +217,8 @@ export class EntityStore<T> {
   update(id: string, values: Record<string, unknown>): T | undefined {
     const numeric = parseId(this.cfg.prefix, id);
     if (numeric === undefined) return undefined;
-    if (!this.get(id)) return undefined;
+    const before = this.get(id);
+    if (!before) return undefined;
 
     const sets: string[] = [];
     const params: Record<string, unknown> = { id: numeric };
@@ -210,7 +234,9 @@ export class EntityStore<T> {
     this.db
       .prepare(`UPDATE ${this.cfg.table} SET ${sets.join(", ")} WHERE id = @id`)
       .run(params);
-    return this.get(id);
+    const after = this.get(id)!;
+    this.cfg.hooks?.onUpdate?.(before, after);
+    return after;
   }
 
   delete(id: string): boolean {
@@ -254,6 +280,14 @@ export class Store {
       prefix: "task",
       fields: ["title", "description", "status"],
       parent: { column: "milestoneId", prefix: "milestone" },
+      hooks: {
+        onCreate: (t) => this.recordActivity(t.id, "status", "", null, t.status),
+        onUpdate: (before, after) => {
+          if (before.status !== after.status) {
+            this.recordActivity(after.id, "status", "", before.status, after.status);
+          }
+        },
+      },
     });
     this.specs = new EntityStore<Spec>(this.db, {
       table: "specs",
@@ -318,10 +352,23 @@ export class Store {
         PRIMARY KEY (taskId, dependsOnId)
       );
 
+      -- Append-only activity log per task: status transitions (auto-recorded on
+      -- create/update) and free-form notes (logged explicitly). Ordered by id.
+      CREATE TABLE IF NOT EXISTS task_activity (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        taskId      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL CHECK (kind IN ('status','note')),
+        message     TEXT NOT NULL DEFAULT '',
+        fromStatus  TEXT,
+        toStatus    TEXT,
+        createdAt   TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_milestones_projectId ON milestones(projectId);
       CREATE INDEX IF NOT EXISTS idx_tasks_milestoneId    ON tasks(milestoneId);
       CREATE INDEX IF NOT EXISTS idx_specs_taskId         ON specs(taskId);
       CREATE INDEX IF NOT EXISTS idx_deps_dependsOnId     ON task_dependencies(dependsOnId);
+      CREATE INDEX IF NOT EXISTS idx_activity_taskId      ON task_activity(taskId);
     `);
   }
 
@@ -561,6 +608,61 @@ export class Store {
     }
     chain.reverse(); // prerequisite-first
     return chain.map((id) => this.tasks.get(formatId("task", id))!);
+  }
+
+  // --- Task activity log ------------------------------------------------------
+  //
+  // An append-only history per task. Status transitions are recorded
+  // automatically by the tasks store hooks above; notes are added via logTask.
+
+  private mapActivityRow(row: Record<string, unknown>): TaskActivity {
+    return {
+      id: formatId("activity", row.id as number),
+      taskId: formatId("task", row.taskId as number),
+      kind: row.kind as ActivityKind,
+      message: row.message as string,
+      fromStatus: (row.fromStatus as string | null) ?? null,
+      toStatus: (row.toStatus as string | null) ?? null,
+      createdAt: row.createdAt as string,
+    };
+  }
+
+  /** Insert one activity row and return it. Assumes a valid task id. */
+  private recordActivity(
+    taskId: string,
+    kind: ActivityKind,
+    message: string,
+    fromStatus: string | null,
+    toStatus: string | null,
+  ): TaskActivity {
+    const tid = parseId("task", taskId);
+    if (tid === undefined) throw new Error(`Invalid task id: ${taskId}`);
+    const info = this.db
+      .prepare(
+        `INSERT INTO task_activity (taskId, kind, message, fromStatus, toStatus, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(tid, kind, message, fromStatus, toStatus, nowIso());
+    const row = this.db
+      .prepare(`SELECT * FROM task_activity WHERE id = ?`)
+      .get(info.lastInsertRowid) as Record<string, unknown>;
+    return this.mapActivityRow(row);
+  }
+
+  /** Append a free-form note to a task's activity log. */
+  logTask(taskId: string, message: string): TaskActivity {
+    if (!this.tasks.get(taskId)) throw new Error(`No task found with id ${taskId}`);
+    return this.recordActivity(taskId, "note", message, null, null);
+  }
+
+  /** The full activity log for a task, oldest first. */
+  taskActivity(taskId: string): TaskActivity[] {
+    const tid = parseId("task", taskId);
+    if (tid === undefined) throw new Error(`Invalid task id: ${taskId}`);
+    const rows = this.db
+      .prepare(`SELECT * FROM task_activity WHERE taskId = ? ORDER BY id`)
+      .all(tid) as Record<string, unknown>[];
+    return rows.map((r) => this.mapActivityRow(r));
   }
 
   close(): void {

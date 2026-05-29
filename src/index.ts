@@ -13,6 +13,7 @@ import {
   type Task,
   type Spec,
   type ProjectTree,
+  type TaskActivity,
 } from "./store.js";
 import { MemoryStore, MEMORY_KINDS, type Memory } from "./memory.js";
 
@@ -407,6 +408,58 @@ server.registerTool(
       return ok(`Critical path (${path.length} task${path.length === 1 ? "" : "s"}):\n\n${chain}`);
     } catch (e) {
       return err(`Could not compute critical path: ${(e as Error).message}`);
+    }
+  },
+);
+
+// --- Task activity & history --------------------------------------------------
+
+function formatActivity(a: TaskActivity): string {
+  if (a.kind === "status") {
+    const transition = a.fromStatus ? `${a.fromStatus} → ${a.toStatus}` : `created (${a.toStatus})`;
+    return `${a.id} [status] ${a.createdAt}  ${transition}`;
+  }
+  return `${a.id} [note]   ${a.createdAt}  ${a.message}`;
+}
+
+server.registerTool(
+  "log_task",
+  {
+    title: "Log task activity",
+    description:
+      "Append a free-form note to a task's activity log — a record of what was done, decided, or attempted. Status changes are logged automatically; use this for everything else.",
+    inputSchema: {
+      taskId: z.string().describe("The task ID, e.g. task-1"),
+      message: z.string().min(1).describe("What happened — progress, a decision, a blocker, a result"),
+    },
+  },
+  async ({ taskId, message }: { taskId: string; message: string }) => {
+    try {
+      const entry = store.logTask(taskId, message);
+      return ok(`Logged to ${taskId}:\n${formatActivity(entry)}`);
+    } catch (e) {
+      return err(`Could not log activity: ${(e as Error).message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "get_task_activity",
+  {
+    title: "Get task activity",
+    description:
+      "Return a task's full activity history, oldest first — status transitions (auto-recorded) interleaved with logged notes.",
+    inputSchema: { id: z.string().describe("The task ID, e.g. task-1") },
+  },
+  async ({ id }: { id: string }) => {
+    try {
+      if (!store.tasks.get(id)) return err(`No task found with id ${id}.`);
+      const log = store.taskActivity(id);
+      if (log.length === 0) return ok(`No activity recorded for ${id} yet.`);
+      const task = store.tasks.get(id)!;
+      return ok(`History for ${id} [${task.status}] ${task.title}:\n\n${log.map(formatActivity).join("\n")}`);
+    } catch (e) {
+      return err(`Could not read activity: ${(e as Error).message}`);
     }
   },
 );

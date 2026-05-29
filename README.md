@@ -53,6 +53,36 @@ rejects any edge that would close a loop. Deleting a task removes its edges.
 `get_project_tree` annotates any task still waiting on an unfinished
 prerequisite with `⛔ blocked by …`.
 
+## Task activity & history
+
+Every task carries an **append-only activity log** — a chronological record of
+what happened to it, so the work an agent did is auditable after the fact.
+
+| Tool | Description |
+| --- | --- |
+| `log_task` | Append a free-form note to a task: progress, a decision, a blocker, a result. |
+| `get_task_activity` | Show a task's full history, oldest first. |
+
+Two kinds of entry land in the log:
+
+- **status** — recorded *automatically* whenever a task is created or changes
+  status (`from → to`, timestamped). You never write these by hand.
+- **note** — written explicitly via `log_task`. This is where an agent records
+  *what it's been doing* as it works a task.
+
+```
+History for task-1 [done] Build parser:
+
+activity-1 [status] 2026-05-28T…  created (todo)
+activity-2 [note]   2026-05-28T…  Sketched the grammar, picked recursive descent
+activity-3 [status] 2026-05-28T…  todo → in_progress
+activity-4 [note]   2026-05-28T…  Parser handles literals + binary ops; 12 tests green
+activity-5 [status] 2026-05-28T…  in_progress → done
+```
+
+The log lives in the `task_activity` table and is deleted with its task (and any
+ancestor) via cascade.
+
 ## Persistence
 
 Tasks are persisted to a SQLite database (via `better-sqlite3`). By default the
