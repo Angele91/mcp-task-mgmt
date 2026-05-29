@@ -293,6 +293,17 @@ registerCrud<Spec>({
 
 // --- Tree view ----------------------------------------------------------------
 
+/** A compact one-line rendering of an activity entry for the tree. */
+function activityLine(a: TaskActivity): string {
+  const when = a.createdAt.slice(0, 10); // YYYY-MM-DD
+  if (a.kind === "status") {
+    const change = a.fromStatus ? `${a.fromStatus} → ${a.toStatus}` : `created (${a.toStatus})`;
+    return `↳ ${change}  · ${when}`;
+  }
+  const msg = a.message.length > 64 ? `${a.message.slice(0, 63)}…` : a.message;
+  return `↳ “${msg}”  · ${when}`;
+}
+
 function renderTree(tree: ProjectTree): string {
   // A task is blocked when any prerequisite isn't done yet. Build a status map
   // across the whole project so we can name the unmet prerequisites.
@@ -307,6 +318,9 @@ function renderTree(tree: ProjectTree): string {
       const tag =
         t.status !== "done" && unmet.length ? `  ⛔ blocked by ${unmet.join(", ")}` : "";
       lines.push(`      └─ ${t.id} [${t.status}] ${t.title}${tag}`);
+      for (const a of t.recentActivity) {
+        lines.push(`          ${activityLine(a)}`);
+      }
       for (const s of t.specs) {
         lines.push(`          └─ ${s.id} [${s.status}] ${s.title}`);
       }
@@ -319,11 +333,21 @@ server.registerTool(
   "get_project_tree",
   {
     title: "Get project tree",
-    description: "Get the full nested hierarchy (milestones → tasks → specs) for a project.",
-    inputSchema: { id: z.string().describe("The project ID, e.g. project-1") },
+    description:
+      "Get the full nested hierarchy (milestones → tasks → specs) for a project. Each task shows its most recent activity; pass `activity` to widen or hide it.",
+    inputSchema: {
+      id: z.string().describe("The project ID, e.g. project-1"),
+      activity: z
+        .number()
+        .int()
+        .min(0)
+        .max(10)
+        .optional()
+        .describe("Recent activity entries to show per task (default 1, 0 to hide)"),
+    },
   },
-  async ({ id }: { id: string }) => {
-    const tree = store.projectTree(id);
+  async ({ id, activity }: { id: string; activity?: number }) => {
+    const tree = store.projectTree(id, activity ?? 1);
     return tree ? ok(renderTree(tree)) : err(`No project found with id ${id}.`);
   },
 );

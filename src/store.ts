@@ -76,6 +76,8 @@ export interface TaskNode extends Task {
   specs: Spec[];
   /** IDs of tasks this one depends on (must be `done` first). */
   dependsOn: string[];
+  /** Most recent activity entries, newest first (empty if not requested). */
+  recentActivity: TaskActivity[];
 }
 
 /** A node in the rendered project tree. */
@@ -372,8 +374,13 @@ export class Store {
     `);
   }
 
-  /** Build the full nested tree for a project, or undefined if not found. */
-  projectTree(projectId: string): ProjectTree | undefined {
+  /**
+   * Build the full nested tree for a project, or undefined if not found.
+   *
+   * @param activityLimit How many recent activity entries to attach per task
+   *   (newest first). 0 attaches none. Defaults to 1.
+   */
+  projectTree(projectId: string, activityLimit = 1): ProjectTree | undefined {
     const project = this.projects.get(projectId);
     if (!project) return undefined;
     const milestones = this.milestones.list(projectId).map((milestone) => {
@@ -381,6 +388,7 @@ export class Store {
         ...task,
         specs: this.specs.list(task.id),
         dependsOn: this.dependencyIds(task.id),
+        recentActivity: activityLimit > 0 ? this.recentActivity(task.id, activityLimit) : [],
       }));
       return { ...milestone, tasks };
     });
@@ -662,6 +670,16 @@ export class Store {
     const rows = this.db
       .prepare(`SELECT * FROM task_activity WHERE taskId = ? ORDER BY id`)
       .all(tid) as Record<string, unknown>[];
+    return rows.map((r) => this.mapActivityRow(r));
+  }
+
+  /** The most recent activity entries for a task, newest first. */
+  recentActivity(taskId: string, limit = 1): TaskActivity[] {
+    const tid = parseId("task", taskId);
+    if (tid === undefined) return [];
+    const rows = this.db
+      .prepare(`SELECT * FROM task_activity WHERE taskId = ? ORDER BY id DESC LIMIT ?`)
+      .all(tid, limit) as Record<string, unknown>[];
     return rows.map((r) => this.mapActivityRow(r));
   }
 

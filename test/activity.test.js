@@ -104,6 +104,40 @@ describe("taskActivity", () => {
   });
 });
 
+describe("projectTree recent activity", () => {
+  it("attaches the latest entry per task by default", () => {
+    const p = store.projects.create(null, { name: "P" });
+    const m = store.milestones.create(p.id, { name: "M" });
+    const t = store.tasks.create(m.id, { title: "T" });
+    store.tasks.update(t.id, { status: "in_progress" });
+    const tree = store.projectTree(p.id);
+    const node = tree.milestones[0].tasks[0];
+    assert.equal(node.recentActivity.length, 1);
+    assert.equal(node.recentActivity[0].toStatus, "in_progress"); // newest
+  });
+
+  it("returns entries newest-first up to the limit", () => {
+    const p = store.projects.create(null, { name: "P" });
+    const m = store.milestones.create(p.id, { name: "M" });
+    const t = store.tasks.create(m.id, { title: "T" });
+    store.logTask(t.id, "first");
+    store.logTask(t.id, "second");
+    const node = store.projectTree(p.id, 2).milestones[0].tasks[0];
+    assert.deepEqual(
+      node.recentActivity.map((a) => a.message),
+      ["second", "first"],
+    );
+  });
+
+  it("attaches nothing when the limit is 0", () => {
+    const p = store.projects.create(null, { name: "P" });
+    const m = store.milestones.create(p.id, { name: "M" });
+    store.tasks.create(m.id, { title: "T" });
+    const node = store.projectTree(p.id, 0).milestones[0].tasks[0];
+    assert.deepEqual(node.recentActivity, []);
+  });
+});
+
 describe("cascade", () => {
   it("drops activity when the task is deleted", () => {
     const id = seedTask();

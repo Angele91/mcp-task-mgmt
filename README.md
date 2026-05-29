@@ -80,6 +80,20 @@ activity-4 [note]   2026-05-28T…  Parser handles literals + binary ops; 12 tes
 activity-5 [status] 2026-05-28T…  in_progress → done
 ```
 
+`get_project_tree` surfaces each task's **most recent** entry inline, so the
+latest state of the work is visible at a glance:
+
+```
+  └─ milestone-1 [planned] v1
+      └─ task-1 [done] Build parser
+          ↳ in_progress → done  · 2026-05-28
+      └─ task-2 [todo] Wire CLI
+          ↳ created (todo)  · 2026-05-28
+```
+
+Pass `activity` to the tool to widen this (e.g. `5` for the last five entries
+per task) or hide it (`0`).
+
 The log lives in the `task_activity` table and is deleted with its task (and any
 ancestor) via cascade.
 
