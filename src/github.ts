@@ -51,11 +51,36 @@ export function issueStateToTaskStatus(state: IssueState, currentTaskStatus: str
   return currentTaskStatus === "done" ? "in_progress" : currentTaskStatus;
 }
 
-// --- gh exec wrappers (thin; not unit-tested) --------------------------------
+// --- gh exec wrappers --------------------------------------------------------
+
+/**
+ * Runs `gh <args>` and resolves with its stdout. The default implementation
+ * shells out via `execFile`; tests swap it out with `__setRunner`. Kept as the
+ * single seam so `gh()` (and its error mapping) stays exercisable without a
+ * real `gh` binary or network.
+ */
+export type GhRunner = (args: string[]) => Promise<string>;
+
+const realRunner: GhRunner = async (args) => {
+  const { stdout } = await execFileAsync("gh", args, { maxBuffer: 4 * 1024 * 1024 });
+  return stdout;
+};
+
+let runner: GhRunner = realRunner;
+
+/** Test hook: replace the command runner used by `gh()`. */
+export function __setRunner(fn: GhRunner): void {
+  runner = fn;
+}
+
+/** Test hook: restore the default `execFile`-backed runner. */
+export function __resetRunner(): void {
+  runner = realRunner;
+}
 
 async function gh(args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("gh", args, { maxBuffer: 4 * 1024 * 1024 });
+    const stdout = await runner(args);
     return stdout.trim();
   } catch (e) {
     const err = e as NodeJS.ErrnoException & { stderr?: string };

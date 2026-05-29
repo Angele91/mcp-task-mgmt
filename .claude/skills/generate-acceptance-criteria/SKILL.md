@@ -50,9 +50,15 @@ Each corner case becomes one criterion: a single, checkable statement.
 2. **Establish change context** (mandate B.1) — capture the diff / affected surface.
 3. **Draft criteria** — happy path, then the corner-case checklist (A), then one per uncovered affected path (B).
 4. **Record them** — `add_acceptance_criterion { specId, text, test? }` per criterion. Attach a `test` reference when the test already exists.
-5. **Make them real** — write the missing tests, run them, then `update_acceptance_criterion { id, verified: true, test: "<ref>" }`. **Only mark `verified` once a test exists and passes** — never on intent.
-6. **Verify coverage** — `get_spec_coverage { specId }` (and `get_coverage_report { projectId }` for the rollup). Resolve every **Nyquist gap** (criterion with no linked test). If a gap is deliberately accepted, leave a one-line reason in the task's activity log (`log_task`) — don't silently leave it.
-7. **Done = no gaps.** A spec is complete only when `get_spec_coverage` shows every criterion verified *and* tested, or each remaining gap is explicitly accepted with a logged rationale.
+5. **Fix the gaps — don't just report them (the wired loop).** Generation includes *closing* every gap it finds. For each criterion without a passing test, loop until resolved:
+   1. **Write the test** (match the suite's style). If the affected code isn't reachable by a test as written, make the *smallest* refactor that adds a seam (e.g. an injectable command runner) without changing public behavior.
+   2. **Run the suite.** If the new test reveals a real bug — the corner case the checklist surfaced — **fix the code**, not the test. A test bent to match buggy behavior is worse than no test.
+   3. **Re-run until green**, then `update_acceptance_criterion { id, verified: true, test: "<ref>" }`. Only mark `verified` once a test exists and passes — never on intent.
+   This step is the point of the skill: a surfaced gap that ships unfixed is a regression waiting to happen. Identifying it is not "done."
+6. **Verify coverage** — `get_spec_coverage { specId }` (and `get_coverage_report { projectId }` for the rollup) plus the coverage runner (`node --test --experimental-test-coverage`). Every **Nyquist gap** and every uncovered affected line/branch is either closed by step 5 or explicitly accepted with a one-line reason in the task's activity log (`log_task`) — never silently left.
+7. **Done = no gaps, suite green.** A spec is complete only when `get_spec_coverage` shows every criterion verified *and* tested, the full suite passes, and each remaining gap (if any) is explicitly accepted with a logged rationale.
+
+> For larger changes, the `ac-coverage-fix` workflow (`.claude/workflows/`) automates step 5 across many files: it fans out a fix agent per gap (write tests / minimal refactor), then a verify agent builds and runs the suite green.
 
 ## Notes
 

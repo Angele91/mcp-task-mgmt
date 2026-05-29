@@ -133,6 +133,18 @@ describe("update", () => {
     assert.equal(updated.createdAt, note.createdAt);
   });
 
+  it("updates kind and source and persists them", () => {
+    const note = m.remember({ content: "x", kind: "lesson", source: "conv-1" });
+    const updated = m.update(note.id, { kind: "decision", source: "conv-2" });
+    assert.equal(updated.kind, "decision");
+    assert.equal(updated.source, "conv-2");
+    assert.equal(updated.content, "x"); // untouched
+    // Re-read from the store to confirm the change was persisted, not just returned.
+    const reread = m.get(note.id);
+    assert.equal(reread.kind, "decision");
+    assert.equal(reread.source, "conv-2");
+  });
+
   it("clamps salience on update", () => {
     const note = m.remember({ content: "x" });
     assert.equal(m.update(note.id, { salience: 42 }).salience, 5);
